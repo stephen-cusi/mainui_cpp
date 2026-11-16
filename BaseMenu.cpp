@@ -1173,7 +1173,10 @@ void UI_Init( void )
 
 	gMenu.m_gameinfo = *gi;
 
-	uiStatic.renderPicbuttonText = gMenu.m_gameinfo.flags & GFL_RENDER_PICBUTTON_TEXT;
+	// Localized text cannot be represented by the original English button artwork.
+	const char *uiLanguage = EngFuncs::GetCvarString( "ui_language" );
+	uiStatic.renderPicbuttonText = ( gMenu.m_gameinfo.flags & GFL_RENDER_PICBUTTON_TEXT ) ||
+		( uiLanguage && !stricmp( uiLanguage, "chinese" ) );
 
 	// trying to load colors.lst
 	UI_ApplyCustomColors ();

@@ -30,8 +30,19 @@ GNU General Public License for more details.
 #include "BitmapFont.h"
 #include "utflib.h"
 
+// XGLua-CJK: with stb_truetype the real face is selected in FindFontDataFile
+// (bundled CJK ttf), name is only a key. GDI renderer uses system fonts,
+// so pick a face that contains CJK glyphs.
+#if defined(MAINUI_USE_STB)
 #define DEFAULT_MENUFONT "Trebuchet MS"
 #define DEFAULT_CONFONT  "Tahoma"
+#elif defined(_WIN32)
+#define DEFAULT_MENUFONT "Microsoft YaHei UI"
+#define DEFAULT_CONFONT  "Microsoft YaHei UI"
+#else
+#define DEFAULT_MENUFONT "Trebuchet MS"
+#define DEFAULT_CONFONT  "Tahoma"
+#endif
 #define DEFAULT_WEIGHT   500
 
 CFontManager *g_FontMgr;
@@ -438,18 +449,15 @@ int CFontManager::GetTextWideScaled(HFont font, const char *text, const int heig
 
 void CFontManager::UploadTextureForFont(CBaseFont *font)
 {
-	// upload only latin needed for english and cyrillic needed for russian
-	// maybe it would be extended someday...
-
-	charRange_t range[] =
-	{
-	{ 0x0021, 0x007E, NULL, 0 }, // ascii printable range
-	{ 0x00C0, 0x00FF, NULL, 0 }, // latin-1 supplement (letters only)
-	{ 0x0100, 0x017F, NULL, 0 }, // latin extended a
-	{ 0x0400, 0x045F, NULL, 0 }, // cyrillic range
-	{ 0, 0, table_cp1251, V_ARRAYSIZE( table_cp1251 ) }, // cp1251
+	// Common European glyphs are packed at startup. Other characters are
+	// rasterized on demand by CBaseFont, keeping startup and memory bounded.
+	charRange_t range[] = {
+		{ 0x0021, 0x007E, NULL, 0 },
+		{ 0x00C0, 0x00FF, NULL, 0 },
+		{ 0x0100, 0x017F, NULL, 0 },
+		{ 0x0400, 0x045F, NULL, 0 },
+		{ 0, 0, table_cp1251, V_ARRAYSIZE( table_cp1251 ) }
 	};
-
 	font->UploadGlyphsForRanges( range, V_ARRAYSIZE( range ) );
 }
 
@@ -534,6 +542,21 @@ HFont CFontBuilder::Create()
 
 bool CFontManager::FindFontDataFile( const char *name, int tall, int weight, int flags, char *dataFile, size_t dataFileChars )
 {
+	// XGLua-CJK: prefer bundled CJK-capable font shipped in gamedir
+	if( !strcmp( name, "Trebuchet MS" ) || !strcmp( name, "Tahoma" ))
+	{
+		if( EngFuncs::FileExists( "gfx/fonts/NotoSansSC-Regular.ttf" ))
+		{
+			Q_strncpy( dataFile, "gfx/fonts/NotoSansSC-Regular.ttf", dataFileChars );
+			return true;
+		}
+		if( EngFuncs::FileExists( "gfx/fonts/NotoSansSC-Regular-subset.ttf" ))
+		{
+			Q_strncpy( dataFile, "gfx/fonts/NotoSansSC-Regular-subset.ttf", dataFileChars );
+			return true;
+		}
+	}
+
 	if( !strcmp( name, "Trebuchet MS" ))
 	{
 		Q_strncpy( dataFile, "gfx/fonts/FiraSans-Regular.ttf", dataFileChars );

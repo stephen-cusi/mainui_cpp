@@ -26,7 +26,7 @@ project(MAINUI)
 set(CMAKE_CXX_STANDARD 11)
 
 option(MAINUI_USE_CUSTOM_FONT_RENDER "Use custom font rendering" ON)
-option(MAINUI_USE_STB "Use stb_truetype.h for rendering(*nix-only)" OFF)
+option(MAINUI_USE_STB "Use stb_truetype.h for rendering(any platform, uses bundled ttf from gfx/fonts/)" OFF)
 option(MAINUI_FONT_SCALE "Scale fonts by height" OFF)
 
 if(NOT XASH_SDK)
@@ -61,21 +61,21 @@ if(MSVC)
 	add_definitions(-D_CRT_SECURE_NO_WARNINGS)
 endif()
 
-# Font Rendering(FreeType or WinAPI)
+# Font Rendering(stb_truetype, FreeType or WinAPI)
 if(MAINUI_USE_CUSTOM_FONT_RENDER)
-	# Win32 will always use GDI font renderer
-	if(NOT WIN32)
-		if(MAINUI_USE_STB)
-			# Use stbtt
-			add_definitions(-DMAINUI_USE_STB)
-		else()
-			# Use freetype2
-			find_package(PkgConfig)
-			pkg_check_modules(FT2 REQUIRED freetype2)
-			include_directories(${FT2_INCLUDE_DIRS})
-			target_link_libraries(menu ${FT2_LIBRARIES})
-			add_definitions(-DMAINUI_USE_FREETYPE)
-		endif()
+	# XGLua-CJK: stb_truetype is platform-independent (renders glyphs from a
+	# bundled ttf loaded through engine filesystem), allow it on Windows too
+	if(MAINUI_USE_STB)
+		add_definitions(-DMAINUI_USE_STB)
+	elseif(WIN32)
+		# WinAPI GDI font renderer (system fonts only)
+	else()
+		# Use freetype2
+		find_package(PkgConfig)
+		pkg_check_modules(FT2 REQUIRED freetype2)
+		include_directories(${FT2_INCLUDE_DIRS})
+		target_link_libraries(menu ${FT2_LIBRARIES})
+		add_definitions(-DMAINUI_USE_FREETYPE)
 	endif()
 
 	add_definitions(-DMAINUI_USE_CUSTOM_FONT_RENDER)

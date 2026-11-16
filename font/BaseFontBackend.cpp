@@ -13,6 +13,7 @@ MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
 GNU General Public License for more details.
 */
 #include "BaseFontBackend.h"
+#include "FontCacheValidation.h"
 #include "FontManager.h"
 #include <math.h>
 #include "Utils.h"
@@ -148,23 +149,25 @@ void CBaseFont::UploadGlyphsForRanges(charRange_t *range, int rangeSize)
 				ystart -= height + 1; // HACKHACK: Add more space between rows, this removes ugly 1 height pixel rubbish
 
 				// No free space now
+				// XGLua-CJK fix: vertical space is exhausted, so the height
+				// must always grow: CBMP::Increase copies old rows
+				// bottom-aligned, and the used region stays in place if
+				// ystart is adjusted by the old used height. The old code
+				// grew the width alone and rewound ystart to the canvas top,
+				// overwriting the first-packed glyphs and corrupting several
+				// ASCII letters once the atlas became large (CJK uploads).
 				if( ystart - height - 1 <= 0 )
 				{
-					if( hdr->height <= (int)hdr->width ) // prioritize height grow
-					{
-						int oldheight = hdr->height - ystart;
-						bmp.Increase( hdr->width, hdr->height * 2 );
-						hdr = bmp.GetBitmapHdr();
-						ystart = hdr->height - oldheight - 1;
-					}
-					else
-					{
-						bmp.Increase( hdr->width * 2, hdr->height );
-						hdr = bmp.GetBitmapHdr();
-						line = 0;
-						xstart = lines[line];
-						ystart = hdr->height - 1;
-					}
+					int oldheight = hdr->height - ystart;
+					uint newWidth = hdr->width;
+
+					// keep the atlas close to square
+					if((uint)hdr->height * 2 > hdr->width )
+						newWidth = hdr->width * 2;
+
+					bmp.Increase( newWidth, hdr->height * 2 );
+					hdr = bmp.GetBitmapHdr();
+					ystart = hdr->height - oldheight - 1;
 
 					// update pointers
 					rgbdata = bmp.GetTextureData();
@@ -227,12 +230,77 @@ void CBaseFont::UploadGlyphsForRanges(charRange_t *range, int rangeSize)
 
 CBaseFont::~CBaseFont()
 {
+	for( int i = 0; i < m_dynamicGlyphs.Count(); ++i )
+	{
+		char name[320];
+		DynamicTextureName( m_dynamicGlyphs[i], name, sizeof( name ) );
+		EngFuncs::PIC_Free( name );
+	}
 	if( m_szTextureName[0] != 0 )
 		EngFuncs::PIC_Free( m_szTextureName );
 }
 
+// Keep a bounded set of on-demand textures per font. Eviction removes the
+// corresponding tree entry before its texture is released.
+static const int MAX_DYNAMIC_GLYPHS = 128;
+
+int CBaseFont::ResolveCharacter( int ch ) const
+{
+	if( ch == ' ' || HasChar( ch ) ) return ch;
+	if( HasChar( 0xFFFD ) ) return 0xFFFD;
+	return '?';
+}
+
+void CBaseFont::DynamicTextureName( int ch, char *dst, size_t size ) const
+{
+	snprintf( dst, size, "%s_u%06X.bmp", m_szTextureName, (unsigned)ch );
+	dst[size - 1] = 0;
+}
+
+bool CBaseFont::EnsureDynamicGlyph( int ch )
+{
+	glyph_t find( ch );
+	if( m_glyphs.IsValidIndex( m_glyphs.Find( find ) ) ) return true;
+	if( !HasChar( ch ) ) return false;
+	const int width = GetMaxCharWidth() + 2 * GetEfxOffset();
+	const int height = GetHeight();
+	if( width <= 0 || height <= 0 || width > 4096 || height > 4096 ) return false;
+	Size size( width, height ), drawn;
+	byte *rgba = new byte[width * height * 4]();
+	GetCharRGBA( ch, Point( 0, 0 ), size, rgba, drawn );
+	if( drawn.w <= 0 || drawn.w > width ) { delete[] rgba; return false; }
+	CBMP bmp( width, height );
+	bmp_t *hdr = bmp.GetBitmapHdr();
+	byte *pixels = bmp.GetTextureData();
+	for( int y = 0; y < height; ++y )
+		memcpy( pixels + ( height - 1 - y ) * hdr->width * 4, rgba + y * width * 4, drawn.w * 4 );
+	delete[] rgba;
+	if( m_dynamicGlyphs.Count() >= MAX_DYNAMIC_GLYPHS )
+	{
+		const int old = m_dynamicGlyphs[0];
+		m_glyphs.Remove( glyph_t( old ) );
+		m_dynamicGlyphs.Remove( 0 );
+		char oldName[320];
+		DynamicTextureName( old, oldName, sizeof( oldName ) );
+		EngFuncs::PIC_Free( oldName );
+	}
+	char name[320];
+	DynamicTextureName( ch, name, sizeof( name ) );
+	HIMAGE image = bmp.Upload( name );
+	if( !image ) return false;
+	glyph_t glyph( ch );
+	glyph.texture = image;
+	glyph.rect.left = glyph.rect.top = 0;
+	glyph.rect.right = drawn.w;
+	glyph.rect.bottom = height;
+	m_glyphs.Insert( glyph );
+	m_dynamicGlyphs.AddToTail( ch );
+	return true;
+}
+
 void CBaseFont::GetCharABCWidths( int ch, int &a, int &b, int &c )
 {
+	ch = ResolveCharacter( ch );
 	abc_t find;
 	find.ch = ch;
 
@@ -510,8 +578,11 @@ int CBaseFont::DrawCharacter(int ch, Point pt, int charH, const unsigned int col
 		}
 	}
 
+	ch = ResolveCharacter( ch );
+	EnsureDynamicGlyph( ch );
 	CBaseFont::glyph_t find( ch );
 	int idx = m_glyphs.Find( find );
+
 
 	if( m_glyphs.IsValidIndex( idx ) )
 	{
@@ -556,7 +627,7 @@ int CBaseFont::DrawCharacter(int ch, Point pt, int charH, const unsigned int col
 	(('T'<<24)+('F'<<16)+('I'<<8)+'U') // little-endian "UIFT"
 
 // Version 3. WinAPI font rendering behavior changed, force font regeneration
-#define CACHED_FONT_VERSION 3
+#define CACHED_FONT_VERSION 4
 
 struct char_data_t
 {
@@ -604,7 +675,7 @@ bool CBaseFont::ReadFromCache( const char *filename, charRange_t *range, size_t 
 	{
 		Con_Printf( "Font cache file is too short\n" );
 		EngFuncs::COM_FreeFile( data );
-		EngFuncs::DeleteFile( filename );
+		EngFuncs::DeleteFile( path );
 		return false;
 	}
 
@@ -612,7 +683,7 @@ bool CBaseFont::ReadFromCache( const char *filename, charRange_t *range, size_t 
 	{
 		Con_Printf( "Wrong font cache file format\n" );
 		EngFuncs::COM_FreeFile( data );
-		EngFuncs::DeleteFile( filename );
+		EngFuncs::DeleteFile( path );
 		return false;
 	}
 
@@ -620,7 +691,7 @@ bool CBaseFont::ReadFromCache( const char *filename, charRange_t *range, size_t 
 	{
 		Con_Printf( "Wrong font cache file version. Expected %d, got %d\n", CACHED_FONT_VERSION, hdr->version );
 		EngFuncs::COM_FreeFile( data );
-		EngFuncs::DeleteFile( filename );
+		EngFuncs::DeleteFile( path );
 		return false;
 	}
 
@@ -628,33 +699,47 @@ bool CBaseFont::ReadFromCache( const char *filename, charRange_t *range, size_t 
 	{
 		Con_Printf( "Font cache file has different character set. Expected %d characters in set, got %d\n", charsCount, hdr->charsCount );
 		EngFuncs::COM_FreeFile( data );
-		EngFuncs::DeleteFile( filename );
+		EngFuncs::DeleteFile( path );
 		return false;
 	}
 
-	if( size < sizeof( cached_font_t ) + hdr->charsCount * sizeof( char_data_t ))
+	if( size < sizeof( cached_font_t ) + hdr->charsCount * sizeof( char_data_t ) + sizeof( bmp_t ))
 	{
 		Con_Printf( "Font cache file is too short (2nd check)\n" );
 		EngFuncs::COM_FreeFile( data );
-		EngFuncs::DeleteFile( filename );
+		EngFuncs::DeleteFile( path );
 		return false;
 	}
 
 	bmp = reinterpret_cast<bmp_t *>(data + sizeof( cached_font_t ) + hdr->charsCount * sizeof( char_data_t ));
 
-	if( bmp->id[0] != 'B' && bmp->id[1] != 'M' )
+	if( bmp->id[0] != 'B' || bmp->id[1] != 'M' )
 	{
 		Con_Printf( "Font cache BMP file id check failed\n" );
 		EngFuncs::COM_FreeFile( data );
-		EngFuncs::DeleteFile( filename );
+		EngFuncs::DeleteFile( path );
 		return false;
 	}
 
-	if( size != sizeof( cached_font_t ) + hdr->charsCount * sizeof( char_data_t ) + bmp->fileSize )
+	if( bmp->width == 0 || bmp->height <= 0 || bmp->width > 16384 || bmp->height > 16384 ||
+		bmp->bitsPerPixel != 32 || bmp->bitmapDataOffset < sizeof( bmp_t ) ||
+		bmp->bitmapDataOffset > bmp->fileSize ||
+		(size_t)bmp->width * (size_t)bmp->height * 4 > bmp->fileSize - bmp->bitmapDataOffset ||
+		(size_t)size != sizeof( cached_font_t ) + (size_t)hdr->charsCount * sizeof( char_data_t ) + bmp->fileSize )
 	{
 		Con_Printf( "Font cache file is too short or too long (3rd check)\n" );
 		EngFuncs::COM_FreeFile( data );
-		EngFuncs::DeleteFile( filename );
+		EngFuncs::DeleteFile( path );
+		return false;
+	}
+
+	// Validate everything before a texture or tree can escape on failure.
+	ch = reinterpret_cast<char_data_t *>(data + sizeof( cached_font_t ));
+	if( !FontCacheGlyphsMatch( ch, range, rangeSize, bmp->width, (uint)bmp->height ) )
+	{
+		Con_Printf( "Font cache character set or glyph bounds mismatch\n" );
+		EngFuncs::COM_FreeFile( data );
+		EngFuncs::DeleteFile( path );
 		return false;
 	}
 
@@ -666,7 +751,7 @@ bool CBaseFont::ReadFromCache( const char *filename, charRange_t *range, size_t 
 	{
 		Con_Printf( "Failed to load font cache BMP\n" );
 		EngFuncs::COM_FreeFile( data );
-		EngFuncs::DeleteFile( filename );
+		EngFuncs::DeleteFile( path );
 		return false;
 	}
 
@@ -678,14 +763,6 @@ bool CBaseFont::ReadFromCache( const char *filename, charRange_t *range, size_t 
 
 		for( j = 0; j < charsCount; j++ )
 		{
-			if( ch->ch != range[i].Character( j ))
-			{
-				Con_Printf( "Font cache file has different character set. Expected %d, got %d", range[i].Character( j ), ch->ch );
-				EngFuncs::COM_FreeFile( data );
-				EngFuncs::PIC_Free( filename );
-				EngFuncs::DeleteFile( filename );
-				return false;
-			}
 
 			glyph_t glyph( ch->ch );
 			abc_t abc;

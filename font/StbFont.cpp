@@ -103,13 +103,20 @@ bool CStbFont::Create( const char *name, int tall, int weight, int blur, float b
 void CStbFont::GetCharRGBA(int ch, Point pt, Size sz, unsigned char *rgba, Size &drawSize )
 {
 	byte *buf, *dst;
+	byte *bitmap;
 	int a, b, c;
 
 	GetCharABCWidths( ch, a, b, c ); // speed up cache
 
 	int bm_top, bm_left, bm_rows, bm_width;
 
-	buf = stbtt_GetCodepointBitmap( &m_fontInfo, scale, scale, ch, &bm_width, &bm_rows, &bm_left, &bm_top );
+	bitmap = stbtt_GetCodepointBitmap( &m_fontInfo, scale, scale, ch, &bm_width, &bm_rows, &bm_left, &bm_top );
+	if( !bitmap )
+	{
+		drawSize.w = drawSize.h = 0;
+		return;
+	}
+	buf = bitmap;
 
 	// see where we should start rendering
 	const int pushDown = m_iAscent + bm_top;
@@ -132,12 +139,19 @@ void CStbFont::GetCharRGBA(int ch, Point pt, Size sz, unsigned char *rgba, Size 
 	if( pushLeft + xend > sz.w )
 		xend += sz.w - ( pushLeft + xend );
 
-	buf = &buf[ ystart * bm_width ];
-	dst = rgba + 4 * sz.w * ( ystart + pushDown );
-
-	// iterate through copying the generated dib into the texture
-	for (int j = ystart; j < yend; j++, dst += 4 * sz.w, buf += bm_width )
+	ystart = Q_min( Q_max( ystart, 0 ), bm_rows );
+	yend = Q_min( Q_max( yend, ystart ), bm_rows );
+	xstart = Q_min( Q_max( xstart, 0 ), bm_width );
+	xend = Q_min( Q_max( xend, xstart ), bm_width );
+	xend = Q_min( xend, xstart + Q_max( 0, sz.w - m_iBlur - m_iOutlineSize ) );
+	// Form pointers only for rows that intersect the destination image.
+	// In particular, ystart can equal bm_rows for fully clipped glyphs.
+	for (int j = ystart; j < yend; j++ )
 	{
+		const int dstY = j + pushDown;
+		if( dstY < 0 || dstY >= sz.h ) continue;
+		buf = bitmap + j * bm_width;
+		dst = rgba + 4 * sz.w * dstY;
 		unsigned int *xdst = (unsigned int*)(dst + 4 * ( m_iBlur + m_iOutlineSize ));
 		for (int i = xstart; i < xend; i++, xdst++)
 		{
@@ -154,7 +168,9 @@ void CStbFont::GetCharRGBA(int ch, Point pt, Size sz, unsigned char *rgba, Size 
 		}
 	}
 
-	drawSize.w = xend - xstart + m_iBlur * 2 + m_iOutlineSize * 2;
+	stbtt_FreeBitmap( bitmap, m_fontInfo.userdata );
+
+	drawSize.w = Q_min( sz.w, xend - xstart + m_iBlur * 2 + m_iOutlineSize * 2 );
 	drawSize.h = yend - ystart + m_iBlur * 2 + m_iOutlineSize * 2;
 
 	ApplyBlur( sz, rgba );
@@ -181,7 +197,7 @@ void CStbFont::GetCharABCWidthsNoCache(int ch, int &a, int &b, int &c)
 
 bool CStbFont::HasChar(int ch) const
 {
-	return true;
+	return stbtt_FindGlyphIndex( &m_fontInfo, ch ) != 0;
 }
 
 #endif // WIN32 && MAINUI_USE_FREETYPE

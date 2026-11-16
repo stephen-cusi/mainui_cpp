@@ -19,6 +19,7 @@ GNU General Public License for more details.
 // #include "port.h" // defines XASH_MOBILE_PLATFORM
 #include "BaseMenu.h"
 #include "utlrbtree.h"
+#include "utlvector.h"
 
 // #ifdef XASH_MOBILE_PLATFORM
 #if defined(__ANDROID__) || TARGET_OS_IPHONE || defined(XASH_SAILFISH) || defined(MAINUI_FONT_SCALE)
@@ -116,6 +117,9 @@ private:
 	bool ReadFromCache( const char *filename, charRange_t *range, size_t rangeSize );
 	void SaveToCache( const char *filename, charRange_t *range, size_t rangeSize, CBMP *bmp );
 
+	bool EnsureDynamicGlyph( int ch );
+	void DynamicTextureName( int ch, char *dst, size_t size ) const;
+	int ResolveCharacter( int ch ) const;
 	void GetBlurValueForPixel( double *distribution, const byte *src, Point srcPt, Size srcSz, byte *dest );
 
 	struct glyph_t
@@ -143,6 +147,7 @@ private:
 		}
 	};
 
+	CUtlVector<int> m_dynamicGlyphs;
 	CUtlRBTree<glyph_t, int> m_glyphs;
 	CUtlRBTree<abc_t, int>   m_ABCCache;
 
