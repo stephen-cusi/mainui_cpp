@@ -219,7 +219,9 @@ bool CMenuTable::MoveCursor(int delta)
 
 void CMenuTable::SetCurrentIndex( int idx )
 {
-	iCurItem = bound( 0, idx, m_pModel->GetRows() );
+	// upper bound must be GetRows() - 1: iCurItem indexes model rows
+	int rows = m_pModel->GetRows();
+	iCurItem = bound( 0, idx, rows > 0 ? rows - 1 : 0 );
 
 	if( iCurItem < iTopItem )
 		iTopItem = iCurItem;
