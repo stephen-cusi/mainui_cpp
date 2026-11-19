@@ -198,6 +198,10 @@ void CMenuVidModes::GetRendererConfig()
 void CMenuVidModes::WriteRendererConfig()
 {
 	int i = renderers.GetCurrentValue();
+	int rows = renderersModel.GetRows();
+	if( rows <= 0 )
+		return;
+	i = bound( 0, i, rows - 1 );
 	EngFuncs::CvarSetString( "r_refdll", renderersModel.GetShortName( i ));
 }
 
@@ -207,7 +211,12 @@ void CMenuVidModes::GetConfig()
 	fullscreen = bound( 0, fullscreen, 2 ); // windowed, fullscreen, borderless
 
 	float vid_mode = EngFuncs::GetCvarFloat( "vid_mode" );
-	vid_mode = bound( 0, vid_mode, vidListModel.GetRows( ));
+	// index into the modes list, so valid range is 0..rows-1; an empty
+	// list (no enumerated modes) has nothing to select
+	if( vidListModel.GetRows() > 0 )
+		vid_mode = bound( 0, vid_mode, vidListModel.GetRows() - 1 );
+	else
+		vid_mode = 0;
 
 	windowMode.SetCurrentValue( fullscreen );
 	vidList.SetCurrentIndex( vid_mode );
